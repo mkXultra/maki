@@ -1,0 +1,18 @@
+[project]
+name = "maki"
+version = "0.1.0"
+description = "A lightweight passive AI CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "croniter>=6.2.2",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+maki = "maki:main"
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"

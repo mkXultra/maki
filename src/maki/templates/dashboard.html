@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>maki confirm</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }
+  .container { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.2rem; color: #7c83ff; margin-bottom: 1rem; }
+  .card { background: #16213e; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid #2a2a4a; }
+  .card h2 { font-size: 1rem; color: #a0a0ff; margin-bottom: 0.5rem; }
+  .output { background: #0f0f23; padding: 1rem; border-radius: 4px; white-space: pre-wrap; font-family: monospace; font-size: 0.85rem; max-height: 400px; overflow-y: auto; margin-bottom: 1rem; }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .btn { padding: 0.5rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+  .btn-accept { background: #2ecc71; color: #fff; }
+  .btn-reject { background: #e74c3c; color: #fff; }
+  .btn-edit { background: #f39c12; color: #fff; }
+  .btn:hover { opacity: 0.85; }
+  textarea { width: 100%; height: 120px; background: #0f0f23; color: #e0e0e0; border: 1px solid #2a2a4a; border-radius: 4px; padding: 0.5rem; font-family: monospace; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+  textarea.show { display: block; }
+  .empty { color: #666; text-align: center; padding: 2rem; }
+  .resolved { color: #2ecc71; font-weight: bold; padding: 1rem; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>maki dashboard</h1>
+  <div id="content">Loading...</div>
+</div>
+<script>
+const token = new URLSearchParams(window.location.search).get('token');
+async function load() {
+  const res = await fetch('/api/pending?token=' + token);
+  const data = await res.json();
+  const el = document.getElementById('content');
+  if (data.length === 0) {
+    el.innerHTML = '<div class="empty">No pending confirms</div>';
+    return;
+  }
+  el.innerHTML = data.map(r => `
+    <div class="card" id="card-${r.id}">
+      <h2>${r.job_name}</h2>
+      <div class="output">${esc(r.agent_output)}</div>
+      <div class="actions">
+        <button class="btn btn-accept" onclick="respond('${r.id}','accept')">Accept</button>
+        <button class="btn btn-reject" onclick="respond('${r.id}','reject')">Reject</button>
+        <button class="btn btn-edit" onclick="showEdit('${r.id}')">Edit</button>
+      </div>
+      <textarea id="edit-${r.id}" placeholder="Enter your feedback..."></textarea>
+      <button class="btn btn-accept" id="send-${r.id}" style="display:none;margin-top:0.5rem" onclick="respond('${r.id}','edit')">Send Edit</button>
+    </div>
+  `).join('');
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showEdit(id) {
+  document.getElementById('edit-' + id).classList.add('show');
+  document.getElementById('send-' + id).style.display = 'inline-block';
+}
+async function respond(id, choice) {
+  const edit = document.getElementById('edit-' + id)?.value || '';
+  await fetch('/api/respond?token=' + token, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id, choice, edit_text: edit})
+  });
+  document.getElementById('card-' + id).innerHTML = '<div class="resolved">Done</div>';
+  setTimeout(load, 1000);
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
