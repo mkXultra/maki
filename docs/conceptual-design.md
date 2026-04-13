@@ -2,7 +2,7 @@
 
 ## 設計思想
 
-makiはオーケストレーター（指揮者）である。自分では判断・作業をせず、「いつ・何を・誰にやらせるか」を制御する。設定ファイルはGitHub Actionsのワークフロー構文に準拠し、ジョブのstepからshellコマンドとしてAI agentを実行する。確認フローはstep outputsベースで実現し、session管理の複雑さを排除している。
+makiはオーケストレーター（指揮者）である。自分では判断・作業をせず、「いつ・何を・誰にやらせるか」を制御する。設定ファイルはGitHub Actionsのワークフロー構文に準拠し、ジョブのstepから `uses: maki/agent` またはshellコマンドとしてAI agentを実行する。確認フローはstep outputsベースで実現し、Agent session IDもoutputsとして後続stepへ渡す。
 
 ## 登場する概念
 
@@ -46,7 +46,7 @@ maki
                         ▼ Job steps を順に実行
               ┌─────────────────────┐
               │    run: (shell)     │──▶ Agent (AI CLI)
-              │    uses: (action)   │──▶ maki/confirm, maki/report, maki/auto
+              │    uses: (action)   │──▶ maki/agent, maki/confirm, maki/report, maki/auto
               └─────────┬───────────┘
                         │
               step outputs (${{ }})
@@ -65,7 +65,7 @@ maki
 |------|------|----|
 | **Core** | ループ制御とジョブstepの実行制御。Eventに応じてジョブを選択し、stepsを順に実行する。Core自身は判断・作業をしない | - |
 | **Job** | GA風のstep列。`run:`（shell）と`uses:`（組み込みaction）で構成される。stepの出力は`${{ }}`式で後続stepから参照可能 | issue-summary, readme |
-| **Agent** | AI CLIでspawnされる作業者。ジョブのstepから`maki agent`コマンドとして実行される | `maki agent --model haiku "要約して"` |
+| **Agent** | AI CLIでspawnされる作業者。ジョブのstepから `uses: maki/agent` または `maki agent` コマンドとして実行される | `uses: maki/agent` |
 | **LoopContext** | ループの実行時状態を保持 | 「前回はSlack確認済み、Issue未確認」 |
 | **Event** | Watcher・Schedule・UserInputの出力を統一的に表現するデータ。種別・発生元・内容を持つ | 「Slackメンション検出」「14:00の勤怠トリガー」「ユーザーが手動指示」 |
 | **Watcher** | 何を監視するかの定義。shellコマンドで外部状態を確認し、変化があればEventを生成する | `gh search issues --assignee=@me` を実行 → 結果からEvent生成 |
@@ -75,13 +75,14 @@ maki
 
 ## Agentの実行モデル
 
-- Agentはジョブのstepからshellコマンドとしてspawnされる（`maki agent` or `ai-cli`）
-- maki本体はAgentを直接管理せず、stepの`run:`でshellコマンドとして実行し、stdoutを受け取る
-- 確認フローはAgentのsession管理ではなく、**step outputsベース**で実現する:
+- Agentはジョブのstepから `uses: maki/agent` またはshellコマンドとしてspawnされる（`maki agent` or `ai-cli`）
+- maki本体はAgentを直接管理せず、step outputsで結果とsession IDを受け渡す
+- 確認フローはAgentのsessionをCoreが保持するのではなく、**step outputsベース**で実現する:
+  - `uses: maki/agent` stepでAgentを実行 → `outputs.result`, `outputs.status`, `outputs.session_id` が返る
   - `run:` stepでAgentを実行 → stdoutが `outputs.result` になる
   - `uses: maki/confirm` stepで出力をユーザーに提示 → `outputs.choice` (accept/reject/edit) を返す
   - 後続stepで `if:` と `${{ steps.<name>.outputs.<key> }}` を使って分岐する
-- この設計はGitHub Actions のワークフロー構文に準拠しており、session管理の複雑さを排除している
+- Agentを再開する場合は `${{ steps.<agent-step>.outputs.session_id }}` を後続の `maki/agent` stepへ渡す
 
 ## Eventの役割
 
@@ -106,8 +107,8 @@ maki
 4. Eventが無ければ **Core** が **UserInput** を通じてユーザーに「何かやることある？」と問いかける
 5. **Core** が Event を受け取り、対応するジョブの **steps** を順に実行する
 6. 各stepの実行:
-   - **`run:`**: shellコマンドを実行。stdoutが `outputs.result` になる。Agent実行もこの中で行う
-   - **`uses:`**: 組み込みactionを実行。前stepの出力を受けて処理する
+   - **`run:`**: shellコマンドを実行。stdoutが `outputs.result` になる
+   - **`uses:`**: 組み込みactionを実行。`maki/agent` ならAgentを実行し、`maki/confirm` なら前stepの出力を確認に回す
    - **`if:`**: `${{ }}` 式で条件評価し、falseならスキップ
 7. `maki/confirm` stepに到達した場合:
    - ユーザーにブラウザUI / CLI / OS通知で確認要求を提示する

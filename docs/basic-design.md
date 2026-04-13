@@ -10,7 +10,7 @@
 - `on:` でトリガー（いつ・何をきっかけに）、`jobs:` でジョブ（何をやるか）を定義する
 - ジョブのstepは `run:`（shellコマンド）と `uses:`（組み込みaction）の2種類
 - ステップ間のデータ受け渡しは `${{ steps.<name>.outputs.<key> }}` 構文（GA準拠）
-- AI agentの実行はshellコマンド（`maki agent` or `ai-cli`）で統一し、maki本体はオーケストレーションに徹する
+- AI agentの実行は `uses: maki/agent` を標準とする。shellコマンド（`maki agent` or `ai-cli`）も `run:` から利用できる
 - confirm UIはlocalhostのHTTPサーバ（threading）で提供。ブラウザ/CLI両対応
 
 ## 設定ファイル
@@ -36,14 +36,20 @@ jobs:
     on: github-issues
     steps:
       - name: Summarize
-        run: maki agent --model haiku "Issue一覧を要約してください。$PREV"
+        uses: maki/agent
+        with:
+          model: haiku
+          prompt: "Issue一覧を要約してください。$PREV"
       - uses: maki/report
 
   readme:
     on: manual
     steps:
       - name: generate
-        run: maki agent --model sonnet "READMEを作成してください"
+        uses: maki/agent
+        with:
+          model: sonnet
+          prompt: "READMEを作成してください"
       - name: review
         uses: maki/confirm
         with:
@@ -87,6 +93,7 @@ src/maki/
 
 | action | 動作 | outputs |
 |--------|------|---------|
+| `maki/agent` | ai-cliでAgentを実行 | `result`, `status`, `session_id` |
 | `maki/report` | 前stepの出力をターミナルに表示 | `result` |
 | `maki/auto` | 前stepの出力を記録して次へ | `result` |
 | `maki/confirm` | ブラウザ/CLIでユーザー確認を求める | `result`, `choice`, `edit_text`, `original` |

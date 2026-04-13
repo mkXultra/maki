@@ -100,9 +100,30 @@ jobs:
 
 | アクション | 動作 | outputs |
 |---|---|---|
+| `maki/agent` | ai-cliでAIエージェントを実行する | `result`: Agent出力 / `status`: completed, confirm, error / `session_id`: Agent session ID |
 | `maki/report` | 前ステップの出力をターミナルに表示 | `result`: 前ステップの出力そのまま |
 | `maki/auto` | 前ステップの出力を記録して次へ | `result`: 前ステップの出力そのまま |
 | `maki/confirm` | ブラウザ/CLIでユーザー確認を求める | `result`: accept時は元の出力、edit時はユーザー入力 / `choice`: accept, reject, edit / `edit_text`: editの場合のユーザー入力 / `original`: confirmに渡された元の出力 |
+
+##### maki/agent のオプション
+
+```yaml
+- name: Draft reply
+  uses: maki/agent
+  with:
+    model: sonnet       # 省略時: haiku
+    cwd: /path/to/repo  # 省略時: .
+    timeout: 180        # 省略時: 180
+    session_id: "${{ steps.previous.outputs.session_id }}"
+    prompt: "返信案を作ってください。$PREV"
+```
+
+- `prompt`: 必須。Agentに渡す指示
+- `model`: 使用するモデル。省略時は `haiku`
+- `cwd`: Agentの作業ディレクトリ。省略時は `.`
+- `timeout`: Agent完了待ちの秒数。省略時は `180`
+- `session_id`: 既存Agent sessionを再開する場合に指定。空文字は未指定として扱う
+- `with:` の文字列では `${{ steps.<名前>.outputs.<キー> }}` と `$PREV` を参照できる
 
 ##### maki/confirm のオプション
 
@@ -145,6 +166,14 @@ GitHub Actions と同様に、各ステップの出力は `steps.<名前>.output
 | `choice` | `accept`, `reject`, `edit` のいずれか |
 | `edit_text` | editの場合のユーザー入力（それ以外は空文字） |
 | `original` | confirmに渡された元の出力 |
+
+#### maki/agent の outputs
+
+| キー | 値 |
+|---|---|
+| `result` | Agentの出力 |
+| `status` | `completed`, `confirm`, `error` のいずれか |
+| `session_id` | Agent session ID。取得できない場合は空文字 |
 
 #### 参照方法
 
@@ -198,14 +227,20 @@ jobs:
     on: github-issues
     steps:
       - name: Summarize
-        run: maki agent --model haiku "Issue一覧を要約してください。$PREV"
+        uses: maki/agent
+        with:
+          model: haiku
+          prompt: "Issue一覧を要約してください。$PREV"
       - uses: maki/report
 
   readme:
     on: manual
     steps:
       - name: generate
-        run: maki agent --model sonnet "READMEを作成してください"
+        uses: maki/agent
+        with:
+          model: sonnet
+          prompt: "READMEを作成してください"
       - name: review
         uses: maki/confirm
         with:
@@ -215,5 +250,9 @@ jobs:
         run: echo "${{ steps.generate.outputs.result }}" > README.md
       - name: revise
         if: "${{ steps.review.outputs.choice == 'edit' }}"
-        run: maki agent --model sonnet "フィードバック：${{ steps.review.outputs.edit_text }}"
+        uses: maki/agent
+        with:
+          model: sonnet
+          session_id: "${{ steps.generate.outputs.session_id }}"
+          prompt: "フィードバック：${{ steps.review.outputs.edit_text }}"
 ```

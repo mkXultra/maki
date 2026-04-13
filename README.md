@@ -50,14 +50,21 @@ jobs:
     on: github-issues      # どのWatcherのEventで起動するか
     steps:
       - name: Summarize
-        run: maki agent --model haiku --cwd /home/yourname "以下のIssue一覧を要約してください。$PREV"
+        uses: maki/agent
+        with:
+          model: haiku
+          cwd: /home/yourname
+          prompt: "以下のIssue一覧を要約してください。$PREV"
       - uses: maki/report  # 結果を表示
 
   kintai:
     on: manual             # 手動実行のみ
     steps:
       - name: Clock in/out
-        run: maki agent --model sonnet "勤怠システムに出退勤を入力する"
+        uses: maki/agent
+        with:
+          model: sonnet
+          prompt: "勤怠システムに出退勤を入力する"
       - uses: maki/confirm # 実行前にユーザー確認を取る
 ```
 
@@ -67,9 +74,27 @@ jobs:
 
 | アクション | 説明 |
 |-----------|------|
+| `maki/agent` | ai-cliでAIエージェントを実行し、結果とsession IDをoutputsに格納する |
 | `maki/confirm` | 前のステップの出力をユーザーに提示し、accept / reject / edit を待つ |
 | `maki/report` | 前のステップの出力を表示して終了 |
 | `maki/auto` | ユーザー確認なしで自動続行 |
+
+`maki/agent` は `with.prompt` を必須とし、`model` / `cwd` / `timeout` / `session_id` を指定できます。出力は `result`, `status`, `session_id` です。後続stepでは `steps.<name>.outputs.session_id` を渡して同じAgent sessionを再開できます。
+
+```yaml
+- name: Draft
+  uses: maki/agent
+  with:
+    model: sonnet
+    prompt: "返信案を作ってください。$PREV"
+
+- name: Revise
+  uses: maki/agent
+  with:
+    model: sonnet
+    session_id: "${{ steps.Draft.outputs.session_id }}"
+    prompt: "修正してください: ${{ steps.review.outputs.edit_text }}"
+```
 
 ## 使い方
 
@@ -124,9 +149,9 @@ maki watch confirm --token <上記URLのtoken値>
 3. Eventが無ければ **UserInput** でユーザーに「何かやることある？」と問いかけ
 4. **Core** が Event にマップされた **Job** のステップを順に実行
 5. `maki/confirm` ステップで Agentの結果をユーザーに提示:
-   - **accept**: Agentのsessionを続行
-   - **reject**: sessionを破棄し次へ
-   - **edit**: フィードバックを渡してAgentを再開
+   - **accept**: 前stepの結果を承認して後続stepへ渡す
+   - **reject**: 空の結果を返し、後続stepで分岐できる
+   - **edit**: フィードバックを `edit_text` として返し、必要なら `maki/agent` に `session_id` と一緒に渡して再開する
 6. **Context** を更新し、**Schedule** が次の起動時刻をセットしてスリープ
 
 ## モジュール構成

@@ -10,7 +10,7 @@
 | Watcher (shellコマンド + `$PREV`受け渡し) | done | 複数ステップ対応 |
 | Watcher cron schedule | done | `croniter`使用。省略時は毎tick |
 | Job steps (`run:` + `uses:`) | done | 排他（両方指定不可） |
-| 組み込みaction (maki/confirm, maki/report, maki/auto) | done | `with:` オプション対応 |
+| 組み込みaction (maki/agent, maki/confirm, maki/report, maki/auto) | done | `maki/agent` は `result/status/session_id` outputs対応 |
 | GA風step outputs (`${{ steps.<name>.outputs.<key> }}`) | done | 環境変数 `$STEPS_<NAME>_<KEY>` でも参照可 |
 | if: 条件分岐 | done | `==`, `!=` 対応 |
 | confirm ブラウザUI | done | `templates/dashboard.html` に分離済み |
@@ -19,6 +19,7 @@
 | HTTPサーバ (threading) | done | 127.0.0.1固定 + ランダムトークン |
 | `maki agent` ヘルパー | done | ai-cli のラッパー |
 | 設定バリデーション | done | trigger参照チェック、uses検証 |
+| pre-commit hook | done | ruff + pytest |
 
 ## CLI コマンド
 
@@ -55,12 +56,12 @@
 | `docs/requirements.md` | done | 3モデルレビュー済み |
 | `docs/conceptual-design.md` | done | v5、3モデルレビュー済み |
 | `docs/basic-design.md` | done | プロトタイプ向け基本設計 |
-| `docs/guide/maki-yaml.md` | done | 2モデル理解度検証済み（4ラウンド） |
+| `docs/guide/maki-yaml.md` | done | `maki/agent` builtin action反映済み |
 
 ## 次のステップ
 
 - F2: Slack監視用のwatcher + jobを定義（agent-browser連携）
-- F6-F7: Issue作業準備・実装ジョブの整備
+- F6-F7: `maki/agent` を使ったIssue作業準備・実装ジョブの整備
 - F8: 勤怠自動入力ジョブの作成
 - F5: ブラウザUIからのアイドル問いかけ対応
 - `maki run` の常駐テスト（実運用）
