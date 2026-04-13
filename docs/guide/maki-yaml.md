@@ -100,7 +100,9 @@ jobs:
 - 前ステップの出力は `$PREV` 環境変数で参照可能
 - `${{ }}` 式も使用可能（実行前に展開される）
 
-#### uses: （組み込みアクション）
+#### uses: （組み込みアクション / ローカルアクション）
+
+`uses:` にはビルトインの `maki/...` と、`./` または `../` で始まるローカルアクションを指定できます。
 
 前のステップの出力をどう処理するかを指定します。
 
@@ -138,6 +140,43 @@ jobs:
   with:
     open_browser: true   # 確認画面をブラウザで自動で開く（デフォルト: false）
 ```
+
+##### ローカルPythonアクション
+
+v1 では `runs.using: python` のみサポートします。外部リポジトリ参照は未対応です。
+
+```yaml
+- name: Echo locally
+  uses: ./examples/local-python-action/echo
+  with:
+    message: "Reply draft. $PREV"
+    prefix: "[local] "
+```
+
+アクションディレクトリには `maki-action.yaml` または `action.yaml` を置きます。
+
+```yaml
+name: echo
+description: Example local Python action
+inputs:
+  message:
+    required: true
+  prefix:
+    default: ""
+runs:
+  using: python
+  main: action.py
+```
+
+- `with:` の値は実行前に `${{ }}` と `$PREV` が解決される
+- `inputs` の `default` と `required` を適用する
+- アクションは現在のPythonインタプリタで `runs.main` を実行する
+- 作業ディレクトリはアクションディレクトリになる
+- 環境変数 `MAKI_INPUTS`, `MAKI_PREV`, `MAKI_OUTPUT` が渡される
+- 出力は stdout ではなく `MAKI_OUTPUT` のJSONを読む
+- JSON はトップレベルのオブジェクト、または `{ "outputs": { ... } }` のどちらでもよい
+- 出力値はすべて文字列として `steps.<名前>.outputs.<キー>` で参照できる
+- 実例は `examples/local-python-action/echo/` を参照
 
 ### if: （条件分岐）
 

@@ -2,11 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 
 BUILTIN_ACTIONS = {"maki/confirm", "maki/report", "maki/auto", "maki/agent"}
+LOCAL_ACTION_PREFIXES = ("./", "../")
+
+
+def is_local_action_ref(action_ref: object) -> bool:
+    return isinstance(action_ref, str) and action_ref.startswith(LOCAL_ACTION_PREFIXES)
+
+
+def resolve_action_path(action_ref: str, base_dir: Path) -> Path:
+    return (base_dir / action_ref).resolve()
+
+
+def normalize_action_metadata(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        return None
+    return {str(key): value for key, value in raw.items()}
 
 
 @dataclass
@@ -40,6 +58,7 @@ class Config:
     default_interval: int = 300
     watchers: list[WatcherDef] = field(default_factory=list)
     jobs: list[JobDef] = field(default_factory=list)
+    base_dir: Path = field(default_factory=lambda: Path.cwd())
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
@@ -107,6 +126,7 @@ class Config:
             default_interval=default_interval,
             watchers=watchers,
             jobs=jobs,
+            base_dir=path.resolve().parent,
         )
         config.validate()
         return config
@@ -126,10 +146,14 @@ class Config:
                     raise ValueError(
                         f"Job '{job.name}' has a step with both 'run' and 'uses'"
                     )
-                if step.uses and step.uses not in BUILTIN_ACTIONS:
+                if step.uses is not None and not isinstance(step.uses, str):
+                    raise ValueError(
+                        f"Job '{job.name}' step uses must be a string, got {type(step.uses).__name__}"
+                    )
+                if step.uses and step.uses not in BUILTIN_ACTIONS and not is_local_action_ref(step.uses):
                     raise ValueError(
                         f"Job '{job.name}' step uses unknown action '{step.uses}'. "
-                        f"Available: {sorted(BUILTIN_ACTIONS)}"
+                        f"Available: {sorted(BUILTIN_ACTIONS)} or local refs starting with ./ or ../"
                     )
                 if not step.run and not step.uses:
                     raise ValueError(

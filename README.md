@@ -102,6 +102,41 @@ jobs:
     prompt: "修正してください: ${{ steps.review.outputs.edit_text }}"
 ```
 
+### ローカルPythonアクション
+
+`uses:` にはビルトインの `maki/...` に加えて、`./` または `../` で始まるローカルアクションも指定できます。v1 では `runs.using: python` のみ対応します。
+
+```yaml
+- name: Echo locally
+  uses: ./examples/local-python-action/echo
+  with:
+    message: "Reply draft. $PREV"
+    prefix: "[local] "
+```
+
+アクションディレクトリには `maki-action.yaml` または `action.yaml` を置きます。例は `examples/local-python-action/echo/` にあります。
+
+```yaml
+name: echo
+description: Example local Python action
+inputs:
+  message:
+    required: true
+  prefix:
+    default: ""
+runs:
+  using: python
+  main: action.py
+```
+
+実行時は現在のPythonインタプリタで `runs.main` を起動し、以下を環境変数で渡します。
+
+- `MAKI_INPUTS`: `${{ }}` と `$PREV` を解決済みの入力JSON
+- `MAKI_PREV`: 前ステップの `outputs.result`
+- `MAKI_OUTPUT`: アクションがJSONを書き込む出力ファイルパス
+
+出力は stdout ではなく `MAKI_OUTPUT` のJSONから読み取ります。トップレベルのオブジェクト、または `{ "outputs": { ... } }` のどちらでも構いません。すべて文字列として後続stepへ渡されます。
+
 ## 使い方
 
 ```bash

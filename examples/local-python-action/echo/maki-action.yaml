@@ -1,0 +1,10 @@
+name: echo
+description: Example local Python action
+inputs:
+  message:
+    required: true
+  prefix:
+    default: ""
+runs:
+  using: python
+  main: action.py

@@ -132,6 +132,216 @@ def test_run_shell_step_exports_prev_and_step_outputs(monkeypatch: pytest.Monkey
     assert captured["kwargs"]["env"]["STEPS_FIRST_STEP_OTHER_KEY"] == "beta"
 
 
+def test_run_local_action_executes_python_and_reads_outputs(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+description: Example local Python action
+inputs:
+  message:
+    required: true
+  prefix:
+    default: ""
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+inputs = json.loads(os.environ["MAKI_INPUTS"])
+payload = {
+    "outputs": {
+        "result": f"{inputs['prefix']}{inputs['message']}|{os.environ['MAKI_PREV']}",
+        "prefix": inputs["prefix"],
+    }
+}
+Path(os.environ["MAKI_OUTPUT"]).write_text(json.dumps(payload))
+""".strip()
+    )
+
+    result = core.run_local_action(
+        "./echo",
+        "previous",
+        {"message": "hello", "prefix": "hi: "},
+        base_dir=tmp_path,
+    )
+
+    assert result == {"result": "hi: hello|previous", "prefix": "hi: "}
+    assert capsys.readouterr().out == ""
+
+
+def test_run_local_action_resolves_inputs_defaults_expressions_and_prev(tmp_path) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "action.yaml").write_text(
+        """
+name: echo
+inputs:
+  message:
+    required: true
+  prefix:
+    default: ">> "
+  extra:
+    default: fallback
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+inputs = json.loads(os.environ["MAKI_INPUTS"])
+Path(os.environ["MAKI_OUTPUT"]).write_text(
+    json.dumps(
+        {
+            "result": f"{inputs['prefix']}{inputs['message']}",
+            "prev": os.environ["MAKI_PREV"],
+            "extra": inputs["extra"],
+        }
+    )
+)
+""".strip()
+    )
+
+    result = core.run_local_action(
+        "./echo",
+        "prev text",
+        {
+            "message": "${{ steps.seed.outputs.result }}:$PREV",
+            "prefix": "${{ steps.seed.outputs.prefix }}",
+        },
+        expr_context={"steps": {"seed": {"outputs": {"result": "ready", "prefix": "::"}}}},
+        base_dir=tmp_path,
+    )
+
+    assert result == {
+        "result": "::ready:prev text",
+        "prev": "prev text",
+        "extra": "fallback",
+    }
+
+
+def test_run_local_action_returns_empty_outputs_when_file_missing(tmp_path) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text("print('no outputs')")
+
+    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+
+    assert result == {}
+
+
+def test_run_local_action_required_input_missing_fails(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+inputs:
+  message:
+    required: true
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text("raise SystemExit(0)")
+
+    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+
+    assert result is None
+    assert "requires input 'message'" in capsys.readouterr().out
+
+
+def test_run_local_action_unsupported_runs_using_fails(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+runs:
+  using: node
+  main: action.js
+""".strip()
+    )
+
+    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+
+    assert result is None
+    assert "only supports runs.using: python" in capsys.readouterr().out
+
+
+def test_run_local_action_malformed_output_json_fails(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text(
+        """
+import os
+from pathlib import Path
+
+Path(os.environ["MAKI_OUTPUT"]).write_text("{not json")
+""".strip()
+    )
+
+    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+
+    assert result is None
+    assert "output JSON is malformed" in capsys.readouterr().out
+
+
+def test_run_local_action_nonzero_exit_fails(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text(
+        """
+import sys
+
+print("boom")
+sys.exit(2)
+""".strip()
+    )
+
+    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+
+    assert result is None
+    assert "local action failed: boom" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("action", ["maki/auto", "maki/report"])
 def test_builtin_passthrough_actions(action: str, capsys: pytest.CaptureFixture[str]) -> None:
     result = core.run_builtin_action(

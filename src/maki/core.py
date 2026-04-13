@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
 import subprocess
+import sys
+import tempfile
 import time
+from pathlib import Path
 
 import click
+import yaml
 
-from maki.config import Config, JobDef, StepDef
+from maki.config import (
+    BUILTIN_ACTIONS,
+    Config,
+    JobDef,
+    StepDef,
+    is_local_action_ref,
+    normalize_action_metadata,
+    resolve_action_path,
+)
 from maki.confirm import ConfirmChoice, ConfirmRequest, ConfirmStore
 from maki.context import LoopContext
 from maki.event import Event, EventSource
@@ -156,7 +169,15 @@ def process_event(event: Event, config: Config, loop_ctx: LoopContext, store: Co
 
         elif step.uses:
             click.echo(f"  [{step_id}] uses: {step.uses}")
-            outputs = run_builtin_action(step.uses, prev_output, job, store, step.with_options, expr_context)
+            outputs = run_action(
+                step.uses,
+                prev_output,
+                job,
+                store,
+                step.with_options,
+                expr_context,
+                base_dir=config.base_dir,
+            )
             if outputs is None:
                 steps_context[step_id] = {"outputs": {"result": ""}, "outcome": "failure"}
                 return
@@ -202,6 +223,24 @@ def run_shell_step(
     except Exception as e:
         click.echo(f"    error: {e}")
         return None
+
+
+def run_action(
+    action: str,
+    prev: str,
+    job: JobDef,
+    store: ConfirmStore,
+    options: dict | None = None,
+    expr_context: dict | None = None,
+    base_dir: Path | None = None,
+) -> dict[str, str] | None:
+    """Run a builtin or local action. Returns outputs dict or None on rejection/failure."""
+    if action in BUILTIN_ACTIONS:
+        return run_builtin_action(action, prev, job, store, options, expr_context)
+    if is_local_action_ref(action):
+        return run_local_action(action, prev, options, expr_context, base_dir=base_dir)
+    click.echo(f"    error: unsupported action '{action}'")
+    return None
 
 
 def run_builtin_action(
@@ -287,6 +326,153 @@ def run_builtin_action(
         }
 
     return {"result": prev}
+
+
+def _load_local_action_metadata(action_dir: Path) -> dict | None:
+    for filename in ("maki-action.yaml", "action.yaml"):
+        metadata_path = action_dir / filename
+        if metadata_path.exists():
+            try:
+                with metadata_path.open() as fh:
+                    metadata = normalize_action_metadata(yaml.safe_load(fh))
+            except Exception as e:
+                detail = str(e).strip() or e.__class__.__name__
+                click.echo(f"    error: failed to load local action metadata: {detail}")
+                return None
+            if metadata is None:
+                click.echo("    error: local action metadata must be a mapping")
+                return None
+            return metadata
+    click.echo("    error: local action metadata not found (expected maki-action.yaml or action.yaml)")
+    return None
+
+
+def _normalize_local_action_outputs(raw_output: object) -> dict[str, str] | None:
+    if not isinstance(raw_output, dict):
+        click.echo("    error: local action output JSON must be an object")
+        return None
+    outputs = raw_output.get("outputs", raw_output)
+    if not isinstance(outputs, dict):
+        click.echo("    error: local action outputs must be an object")
+        return None
+    return {str(key): "" if value is None else str(value) for key, value in outputs.items()}
+
+
+def run_local_action(
+    action: str,
+    prev: str,
+    options: dict | None = None,
+    expr_context: dict | None = None,
+    base_dir: Path | None = None,
+) -> dict[str, str] | None:
+    options = options or {}
+    expr_context = expr_context or {}
+
+    action_base_dir = base_dir or Path.cwd()
+    action_dir = resolve_action_path(action, action_base_dir)
+    if not action_dir.exists() or not action_dir.is_dir():
+        click.echo(f"    error: local action directory not found: {action}")
+        return None
+
+    metadata = _load_local_action_metadata(action_dir)
+    if metadata is None:
+        return None
+
+    runs = metadata.get("runs")
+    if not isinstance(runs, dict):
+        click.echo("    error: local action metadata must include runs")
+        return None
+
+    using = runs.get("using")
+    if using != "python":
+        click.echo(f"    error: local action only supports runs.using: python, got {using!r}")
+        return None
+
+    main = runs.get("main")
+    if not isinstance(main, str) or not main.strip():
+        click.echo("    error: local action runs.main must be a non-empty string")
+        return None
+
+    resolved_options = resolve_step_value(options, expr_context, prev)
+    if resolved_options is None:
+        resolved_options = {}
+    if not isinstance(resolved_options, dict):
+        click.echo("    error: local action with: must resolve to an object")
+        return None
+
+    metadata_inputs = metadata.get("inputs") or {}
+    if not isinstance(metadata_inputs, dict):
+        click.echo("    error: local action inputs must be a mapping")
+        return None
+
+    resolved_inputs: dict[str, object] = dict(resolved_options)
+    for input_name, input_meta in metadata_inputs.items():
+        if not isinstance(input_meta, dict):
+            input_meta = {}
+        if input_name not in resolved_inputs and "default" in input_meta:
+            resolved_inputs[input_name] = input_meta["default"]
+        if input_meta.get("required") and input_name not in resolved_inputs:
+            click.echo(f"    error: local action requires input '{input_name}'")
+            return None
+
+    main_path = (action_dir / main).resolve()
+    try:
+        main_path.relative_to(action_dir.resolve())
+    except ValueError:
+        click.echo("    error: local action runs.main must stay within the action directory")
+        return None
+    if not main_path.exists():
+        click.echo(f"    error: local action entrypoint not found: {main}")
+        return None
+
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as output_file:
+        output_path = Path(output_file.name)
+
+    env = {
+        **os.environ,
+        "MAKI_INPUTS": json.dumps(resolved_inputs),
+        "MAKI_PREV": prev,
+        "MAKI_OUTPUT": str(output_path),
+    }
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(main_path)],
+            cwd=str(action_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        click.echo("    error: local action timed out")
+        output_path.unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        detail = str(e).strip() or e.__class__.__name__
+        click.echo(f"    error: local action failed to start: {detail}")
+        output_path.unlink(missing_ok=True)
+        return None
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        click.echo(f"    error: local action failed: {detail[:200]}")
+        output_path.unlink(missing_ok=True)
+        return None
+
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        output_path.unlink(missing_ok=True)
+        return {}
+
+    try:
+        raw_output = json.loads(output_path.read_text())
+    except json.JSONDecodeError as e:
+        click.echo(f"    error: local action output JSON is malformed: {e.msg}")
+        return None
+    finally:
+        output_path.unlink(missing_ok=True)
+
+    return _normalize_local_action_outputs(raw_output)
 
 
 def wait_for_confirm(

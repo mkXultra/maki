@@ -75,6 +75,24 @@ jobs:
     }
 
 
+def test_accepts_local_action_refs(tmp_path: Path) -> None:
+    config = load_config(
+        tmp_path,
+        """
+jobs:
+  demo:
+    on: manual
+    steps:
+      - uses: ./examples/local-python-action/echo
+      - uses: ../shared/action
+""",
+    )
+
+    assert config.jobs[0].steps[0].uses == "./examples/local-python-action/echo"
+    assert config.jobs[0].steps[1].uses == "../shared/action"
+    assert config.base_dir == tmp_path.resolve()
+
+
 @pytest.mark.parametrize(
     ("yaml_text", "message"),
     [
@@ -98,6 +116,26 @@ jobs:
         uses: maki/report
 """,
             "both 'run' and 'uses'",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    steps:
+      - uses: vendor/echo
+""",
+            "unknown action 'vendor/echo'",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    steps:
+      - uses: 123
+""",
+            "step uses must be a string",
         ),
     ],
 )
