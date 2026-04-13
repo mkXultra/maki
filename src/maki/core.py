@@ -65,6 +65,17 @@ def eval_condition(condition: str, context: dict) -> bool:
     return resolved.lower() not in ("false", "", "0")
 
 
+def resolve_step_value(value: object, context: dict, prev_output: str) -> object:
+    """Resolve expressions in step option values and expand $PREV in strings."""
+    if isinstance(value, str):
+        return resolve_expressions(value, context).replace("$PREV", prev_output)
+    if isinstance(value, dict):
+        return {k: resolve_step_value(v, context, prev_output) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_step_value(item, context, prev_output) for item in value]
+    return value
+
+
 # --- Main loop ---
 
 def run_loop(config: Config, once: bool = False) -> None:
@@ -145,7 +156,7 @@ def process_event(event: Event, config: Config, loop_ctx: LoopContext, store: Co
 
         elif step.uses:
             click.echo(f"  [{step_id}] uses: {step.uses}")
-            outputs = run_builtin_action(step.uses, prev_output, job, store, step.with_options)
+            outputs = run_builtin_action(step.uses, prev_output, job, store, step.with_options, expr_context)
             if outputs is None:
                 steps_context[step_id] = {"outputs": {"result": ""}, "outcome": "failure"}
                 return
@@ -199,9 +210,11 @@ def run_builtin_action(
     job: JobDef,
     store: ConfirmStore,
     options: dict | None = None,
+    expr_context: dict | None = None,
 ) -> dict[str, str] | None:
     """Run a builtin action. Returns outputs dict or None on rejection/failure."""
     options = options or {}
+    expr_context = expr_context or {}
 
     if action == "maki/auto":
         click.echo(f"    {prev[:200]}")
@@ -230,6 +243,48 @@ def run_builtin_action(
         else:
             click.echo("    Rejected")
             return {"result": "", "choice": "reject", "edit_text": "", "original": prev}
+
+    elif action == "maki/agent":
+        resolved_options = resolve_step_value(options, expr_context, prev)
+        prompt = str(resolved_options.get("prompt", "")) if isinstance(resolved_options, dict) else ""
+        if not prompt.strip():
+            click.echo("    error: maki/agent requires non-empty with.prompt")
+            return None
+
+        model = str(resolved_options.get("model", "haiku"))
+        cwd = str(resolved_options.get("cwd", "."))
+        timeout_raw = resolved_options.get("timeout", 180)
+        try:
+            timeout = int(timeout_raw)
+        except (TypeError, ValueError):
+            click.echo(f"    error: maki/agent timeout must be an integer, got {timeout_raw!r}")
+            return None
+
+        session_id_value = resolved_options.get("session_id")
+        session_id = None if session_id_value in (None, "") else str(session_id_value)
+
+        from maki import agent as maki_agent
+
+        try:
+            result = maki_agent.run_and_wait(
+                prompt=prompt,
+                cwd=cwd,
+                model=model,
+                timeout=timeout,
+                session_id=session_id,
+            )
+        except Exception as e:
+            detail = str(e).strip() or e.__class__.__name__
+            click.echo(f"    error: maki/agent failed: {detail}")
+            return None
+        click.echo(f"    {result.status.value}")
+        if result.output:
+            click.echo(result.output)
+        return {
+            "result": result.output,
+            "status": result.status.value,
+            "session_id": result.session_id or "",
+        }
 
     return {"result": prev}
 

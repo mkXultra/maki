@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 
-BUILTIN_ACTIONS = {"maki/confirm", "maki/report", "maki/auto"}
+BUILTIN_ACTIONS = {"maki/confirm", "maki/report", "maki/auto", "maki/agent"}
 
 
 @dataclass

@@ -40,6 +40,11 @@ jobs:
           format: plain
           nested:
             answer: 42
+      - name: draft
+        uses: maki/agent
+        with:
+          prompt: "Reply draft. $PREV"
+          timeout: 180
 """,
     )
 
@@ -63,21 +68,16 @@ jobs:
         "format": "plain",
         "nested": {"answer": 42},
     }
+    assert job.steps[2].uses == "maki/agent"
+    assert job.steps[2].with_options == {
+        "prompt": "Reply draft. $PREV",
+        "timeout": 180,
+    }
 
 
 @pytest.mark.parametrize(
     ("yaml_text", "message"),
     [
-        (
-            """
-jobs:
-  demo:
-    on: manual
-    steps:
-      - uses: maki/agent
-""",
-            "unknown action 'maki/agent'",
-        ),
         (
             """
 jobs:
