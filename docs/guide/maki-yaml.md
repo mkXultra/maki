@@ -90,6 +90,28 @@ jobs:
 
 #### run: （shellコマンド実行）
 
+`env:` はジョブ単位 (`jobs.<job>.env`) とステップ単位 (`jobs.<job>.steps[].env`) の両方で指定できます。トップレベルの workflow `env:` はまだサポートしておらず、設定読み込み時にエラーになります。
+
+```yaml
+jobs:
+  summarize:
+    on: manual
+    env:
+      REPO_ROOT: /home/miyagi/dev/project
+      SHARED_MODE: job
+    steps:
+      - name: Summarize
+        run: ./scripts/summarize "$PREV"
+        env:
+          SHARED_MODE: step
+          STEP_RESULT: "${{ steps.fetch.outputs.result }}"
+```
+
+- 優先順位は `OSの環境変数 < job.env < step.env < maki実行時の環境変数`
+- `env:` のキーは文字列のみ。値はスカラーを受け付け、実行時には文字列化される
+- `env:` の文字列値では `${{ steps.<名前>.outputs.<キー> }}` と `$PREV` を使用できる
+- `PREV`, `MAKI_INPUTS`, `MAKI_PREV`, `MAKI_OUTPUT` などの maki 実行時の予約環境変数はユーザー定義値で上書きされず、`maki/agent` などのアクション実行にも渡らない
+
 ```yaml
 - name: Summarize
   run: maki agent --model haiku "要約してください。$PREV"
@@ -169,6 +191,7 @@ runs:
 ```
 
 - `with:` の値は実行前に `${{ }}` と `$PREV` が解決される
+- `env:` も `run:` ステップと同じ優先順位で適用され、ローカルアクションのプロセス環境に渡される
 - `inputs` の `default` と `required` を適用する
 - アクションは現在のPythonインタプリタで `runs.main` を実行する
 - 作業ディレクトリはアクションディレクトリになる

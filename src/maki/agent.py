@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 AI_CLI = "ai-cli"
+
+
+def resolve_ai_cli_executable() -> str:
+    resolved = shutil.which(AI_CLI, path=os.environ.get("PATH"))
+    return resolved or AI_CLI
 
 
 class Status(Enum):
@@ -29,12 +36,16 @@ def spawn(
     cwd: str,
     model: str = "claude-ultra",
     session_id: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> int:
     """Spawn an agent via ai-cli and return the PID."""
-    cmd = [AI_CLI, "run", "--cwd", cwd, "--prompt", prompt, "--model", model]
+    cmd = [resolve_ai_cli_executable(), "run", "--cwd", cwd, "--prompt", prompt, "--model", model]
     if session_id:
         cmd.extend(["--session-id", session_id])
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    run_kwargs = {"capture_output": True, "text": True, "check": True}
+    if env is not None:
+        run_kwargs["env"] = env
+    result = subprocess.run(cmd, **run_kwargs)
     data = json.loads(result.stdout)
     return data["pid"]
 
@@ -88,8 +99,9 @@ def run_and_wait(
     model: str = "claude-ultra",
     session_id: str | None = None,
     timeout: int = 180,
+    env: dict[str, str] | None = None,
 ) -> AgentResult:
     """Spawn an agent, wait for it, and return the result."""
-    pid = spawn(prompt=prompt, cwd=cwd, model=model, session_id=session_id)
+    pid = spawn(prompt=prompt, cwd=cwd, model=model, session_id=session_id, env=env)
     wait(pid, timeout=timeout)
     return get_result(pid)

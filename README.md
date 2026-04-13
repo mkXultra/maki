@@ -54,9 +54,15 @@ on:
 jobs:
   issue-summary:
     on: github-issues      # どのWatcherのEventで起動するか
+    env:
+      REPO_ROOT: /home/yourname/project
+      SHARED_MODE: job
     steps:
       - name: Summarize
         uses: maki/agent
+        env:
+          SHARED_MODE: step
+          SUMMARY_SOURCE: "$PREV"
         with:
           model: haiku
           cwd: /home/yourname
@@ -73,6 +79,10 @@ jobs:
           prompt: "勤怠システムに出退勤を入力する"
       - uses: maki/confirm # 実行前にユーザー確認を取る
 ```
+
+`env:` はジョブ単位 (`jobs.<job>.env`) とステップ単位 (`jobs.<job>.steps[].env`) で指定できます。値は文字列・数値・真偽値・null を受け付け、実行時には文字列として渡されます。トップレベルの workflow `env:` はまだ未対応で、設定読み込み時にエラーになります。
+
+優先順位は `OSの環境変数 < job.env < step.env < maki実行時の予約環境変数` です。たとえば `PREV` やローカルPythonアクション向けの `MAKI_INPUTS`, `MAKI_PREV`, `MAKI_OUTPUT` はユーザー定義の `env:` では上書きできず、`maki/agent` にも渡りません。`env:` の文字列値では `${{ steps... }}` と `$PREV` も実行前に解決されます。
 
 ### ビルトインアクション
 
@@ -134,6 +144,7 @@ runs:
 - `MAKI_INPUTS`: `${{ }}` と `$PREV` を解決済みの入力JSON
 - `MAKI_PREV`: 前ステップの `outputs.result`
 - `MAKI_OUTPUT`: アクションがJSONを書き込む出力ファイルパス
+- ジョブ/ステップの `env:` も同時に渡されるが、上記の `MAKI_*` 予約変数が優先される
 
 出力は stdout ではなく `MAKI_OUTPUT` のJSONから読み取ります。トップレベルのオブジェクト、または `{ "outputs": { ... } }` のどちらでも構いません。すべて文字列として後続stepへ渡されます。
 

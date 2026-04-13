@@ -52,10 +52,12 @@ def test_process_event_expands_outputs_and_honors_conditions(monkeypatch: pytest
     calls: list[tuple[str, str, str]] = []
 
     def fake_shell_step(
+        job: JobDef,
         step: StepDef,
         resolved_cmd: str,
         prev_output: str,
         steps_context: dict[str, dict],
+        expr_context: dict,
     ) -> str:
         calls.append((step.name, resolved_cmd, prev_output))
         return "ready" if step.name == "generate" else "consumed"
@@ -99,6 +101,45 @@ def test_process_event_expands_outputs_and_honors_conditions(monkeypatch: pytest
     assert loop_ctx.last_results["manual"] == "consumed"
 
 
+def test_build_step_env_filters_reserved_user_env_for_agent_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PREV", raising=False)
+    monkeypatch.delenv("MAKI_INPUTS", raising=False)
+    monkeypatch.delenv("MAKI_PREV", raising=False)
+    monkeypatch.delenv("MAKI_OUTPUT", raising=False)
+
+    env = core.build_step_env(
+        JobDef(
+            name="demo",
+            on="manual",
+            env={
+                "JOB_ONLY": "job",
+                "PREV": "job-prev",
+                "MAKI_INPUTS": "job-inputs",
+            },
+        ),
+        StepDef(
+            name="draft",
+            env={
+                "STEP_ONLY": "step",
+                "MAKI_PREV": "step-prev",
+                "MAKI_OUTPUT": "step-output",
+            },
+        ),
+        {"steps": {"seed": {"outputs": {"result": "alpha"}}}},
+        "previous output",
+        {"seed": {"outputs": {"result": "alpha"}}},
+    )
+
+    assert env["JOB_ONLY"] == "job"
+    assert env["STEP_ONLY"] == "step"
+    assert env["STEPS_SEED_RESULT"] == "alpha"
+    assert "PREV" not in env
+    assert "MAKI_INPUTS" not in env
+    assert "MAKI_PREV" not in env
+    assert "MAKI_OUTPUT" not in env
+
+
+
 def test_run_shell_step_exports_prev_and_step_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict = {}
 
@@ -110,6 +151,7 @@ def test_run_shell_step_exports_prev_and_step_outputs(monkeypatch: pytest.Monkey
     monkeypatch.setattr(core.subprocess, "run", fake_run)
 
     output = core.run_shell_step(
+        JobDef(name="demo", on="manual"),
         StepDef(name="current", cwd="/tmp"),
         "echo env",
         "previous output",
@@ -121,6 +163,7 @@ def test_run_shell_step_exports_prev_and_step_outputs(monkeypatch: pytest.Monkey
                 },
             },
         },
+        {"steps": {}},
     )
 
     assert output == "next output"
@@ -130,6 +173,54 @@ def test_run_shell_step_exports_prev_and_step_outputs(monkeypatch: pytest.Monkey
     assert captured["kwargs"]["env"]["PREV"] == "previous output"
     assert captured["kwargs"]["env"]["STEPS_FIRST_STEP_RESULT"] == "alpha"
     assert captured["kwargs"]["env"]["STEPS_FIRST_STEP_OTHER_KEY"] == "beta"
+
+
+def test_run_shell_step_merges_and_resolves_job_step_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout=" merged \n", stderr="")
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+    monkeypatch.setenv("SHARED", "os")
+
+    output = core.run_shell_step(
+        JobDef(
+            name="demo",
+            on="manual",
+            env={
+                "JOB_ONLY": "job",
+                "SHARED": "job",
+                "JOB_REF": "job-${{ steps.seed.outputs.result }}",
+                "PREV": "job-prev",
+            },
+        ),
+        StepDef(
+            name="current",
+            cwd="/tmp",
+            env={
+                "STEP_ONLY": "step",
+                "SHARED": "step",
+                "STEP_REF": "step-$PREV",
+                "PREV": "step-prev",
+            },
+        ),
+        "echo env",
+        "previous output",
+        {"seed": {"outputs": {"result": "alpha"}}},
+        {"steps": {"seed": {"outputs": {"result": "alpha"}}}},
+    )
+
+    assert output == "merged"
+    env = captured["kwargs"]["env"]
+    assert env["JOB_ONLY"] == "job"
+    assert env["STEP_ONLY"] == "step"
+    assert env["SHARED"] == "step"
+    assert env["JOB_REF"] == "job-alpha"
+    assert env["STEP_REF"] == "step-previous output"
+    assert env["PREV"] == "previous output"
+    assert env["STEPS_SEED_RESULT"] == "alpha"
 
 
 def test_run_local_action_executes_python_and_reads_outputs(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -169,6 +260,8 @@ Path(os.environ["MAKI_OUTPUT"]).write_text(json.dumps(payload))
     result = core.run_local_action(
         "./echo",
         "previous",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
         {"message": "hello", "prefix": "hi: "},
         base_dir=tmp_path,
     )
@@ -217,6 +310,8 @@ Path(os.environ["MAKI_OUTPUT"]).write_text(
     result = core.run_local_action(
         "./echo",
         "prev text",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
         {
             "message": "${{ steps.seed.outputs.result }}:$PREV",
             "prefix": "${{ steps.seed.outputs.prefix }}",
@@ -245,7 +340,14 @@ runs:
     )
     (action_dir / "action.py").write_text("print('no outputs')")
 
-    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+    result = core.run_local_action(
+        "./echo",
+        "prev",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
+        {},
+        base_dir=tmp_path,
+    )
 
     assert result == {}
 
@@ -266,7 +368,14 @@ runs:
     )
     (action_dir / "action.py").write_text("raise SystemExit(0)")
 
-    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+    result = core.run_local_action(
+        "./echo",
+        "prev",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
+        {},
+        base_dir=tmp_path,
+    )
 
     assert result is None
     assert "requires input 'message'" in capsys.readouterr().out
@@ -284,7 +393,14 @@ runs:
 """.strip()
     )
 
-    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+    result = core.run_local_action(
+        "./echo",
+        "prev",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
+        {},
+        base_dir=tmp_path,
+    )
 
     assert result is None
     assert "only supports runs.using: python" in capsys.readouterr().out
@@ -310,7 +426,14 @@ Path(os.environ["MAKI_OUTPUT"]).write_text("{not json")
 """.strip()
     )
 
-    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+    result = core.run_local_action(
+        "./echo",
+        "prev",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
+        {},
+        base_dir=tmp_path,
+    )
 
     assert result is None
     assert "output JSON is malformed" in capsys.readouterr().out
@@ -336,10 +459,99 @@ sys.exit(2)
 """.strip()
     )
 
-    result = core.run_local_action("./echo", "prev", {}, base_dir=tmp_path)
+    result = core.run_local_action(
+        "./echo",
+        "prev",
+        JobDef(name="demo", on="manual"),
+        StepDef(name="echo-step"),
+        {},
+        base_dir=tmp_path,
+    )
 
     assert result is None
     assert "local action failed: boom" in capsys.readouterr().out
+
+
+def test_run_local_action_receives_merged_env_and_protects_reserved_vars(tmp_path) -> None:
+    action_dir = tmp_path / "echo"
+    action_dir.mkdir()
+    (action_dir / "maki-action.yaml").write_text(
+        """
+name: echo
+inputs:
+  message:
+    required: true
+runs:
+  using: python
+  main: action.py
+""".strip()
+    )
+    (action_dir / "action.py").write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+inputs = json.loads(os.environ["MAKI_INPUTS"])
+Path(os.environ["MAKI_OUTPUT"]).write_text(
+    json.dumps(
+        {
+            "job_only": os.environ.get("JOB_ONLY", ""),
+            "step_only": os.environ.get("STEP_ONLY", ""),
+            "shared": os.environ.get("SHARED", ""),
+            "from_expr": os.environ.get("FROM_EXPR", ""),
+            "from_prev": os.environ.get("FROM_PREV", ""),
+            "maki_prev": os.environ["MAKI_PREV"],
+            "message": inputs["message"],
+            "output_path": os.environ["MAKI_OUTPUT"],
+        }
+    )
+)
+""".strip()
+    )
+
+    result = core.run_local_action(
+        "./echo",
+        "prev text",
+        JobDef(
+            name="demo",
+            on="manual",
+            env={
+                "JOB_ONLY": "job",
+                "SHARED": "job",
+                "FROM_EXPR": "job-${{ steps.seed.outputs.result }}",
+                "FROM_PREV": "job-$PREV",
+                "MAKI_INPUTS": "job override",
+                "MAKI_PREV": "job override",
+                "MAKI_OUTPUT": "job override",
+            },
+        ),
+        StepDef(
+            name="echo-step",
+            env={
+                "STEP_ONLY": "step",
+                "SHARED": "step",
+                "FROM_PREV": "step-$PREV",
+                "MAKI_INPUTS": "step override",
+                "MAKI_PREV": "step override",
+                "MAKI_OUTPUT": "step override",
+            },
+        ),
+        {"message": "hello"},
+        expr_context={"steps": {"seed": {"outputs": {"result": "ready"}}}},
+        steps_context={"seed": {"outputs": {"result": "ready"}}},
+        base_dir=tmp_path,
+    )
+
+    assert result is not None
+    assert result["job_only"] == "job"
+    assert result["step_only"] == "step"
+    assert result["shared"] == "step"
+    assert result["from_expr"] == "job-ready"
+    assert result["from_prev"] == "step-prev text"
+    assert result["maki_prev"] == "prev text"
+    assert result["message"] == "hello"
+    assert result["output_path"] != "step override"
 
 
 @pytest.mark.parametrize("action", ["maki/auto", "maki/report"])
@@ -348,6 +560,7 @@ def test_builtin_passthrough_actions(action: str, capsys: pytest.CaptureFixture[
         action,
         "agent output",
         JobDef(name="demo", on="manual"),
+        StepDef(name="step"),
         ConfirmStore(),
     )
 
@@ -375,6 +588,7 @@ def test_builtin_agent_calls_run_and_wait_with_defaults_and_outputs(
         "maki/agent",
         "previous context",
         JobDef(name="demo", on="manual"),
+        StepDef(name="draft"),
         ConfirmStore(),
         {"prompt": "Reply draft. $PREV"},
     )
@@ -385,6 +599,7 @@ def test_builtin_agent_calls_run_and_wait_with_defaults_and_outputs(
         "model": "haiku",
         "timeout": 180,
         "session_id": None,
+        "env": {**core.os.environ},
     }
     assert result == {
         "result": "draft ready",
@@ -394,6 +609,72 @@ def test_builtin_agent_calls_run_and_wait_with_defaults_and_outputs(
     output = capsys.readouterr().out
     assert "completed" in output
     assert "draft ready" in output
+
+
+def test_builtin_agent_receives_merged_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_and_wait(**kwargs):
+        captured.update(kwargs)
+        return agent.AgentResult(
+            status=agent.Status.COMPLETED,
+            output="draft ready",
+            session_id="session-123",
+        )
+
+    monkeypatch.setattr(agent, "run_and_wait", fake_run_and_wait)
+    monkeypatch.setenv("SHARED", "os")
+    monkeypatch.delenv("PREV", raising=False)
+    monkeypatch.delenv("MAKI_INPUTS", raising=False)
+    monkeypatch.delenv("MAKI_PREV", raising=False)
+    monkeypatch.delenv("MAKI_OUTPUT", raising=False)
+
+    result = core.run_builtin_action(
+        "maki/agent",
+        "prev output",
+        JobDef(
+            name="demo",
+            on="manual",
+            env={
+                "JOB_ONLY": "job",
+                "SHARED": "job",
+                "FROM_EXPR": "${{ steps.seed.outputs.result }}",
+                "PREV": "job-prev",
+                "MAKI_INPUTS": "job-inputs",
+            },
+        ),
+        StepDef(
+            name="draft",
+            env={
+                "STEP_ONLY": "step",
+                "SHARED": "step",
+                "FROM_PREV": "$PREV",
+                "MAKI_PREV": "step-prev",
+                "MAKI_OUTPUT": "step-output",
+            },
+        ),
+        ConfirmStore(),
+        {"prompt": "Reply draft. $PREV"},
+        {"steps": {"seed": {"outputs": {"result": "seeded"}}}},
+        {"seed": {"outputs": {"result": "seeded"}}},
+    )
+
+    assert result == {
+        "result": "draft ready",
+        "status": "completed",
+        "session_id": "session-123",
+    }
+    env = captured["env"]
+    assert env["JOB_ONLY"] == "job"
+    assert env["STEP_ONLY"] == "step"
+    assert env["SHARED"] == "step"
+    assert env["FROM_EXPR"] == "seeded"
+    assert env["FROM_PREV"] == "prev output"
+    assert env["STEPS_SEED_RESULT"] == "seeded"
+    assert "PREV" not in env
+    assert "MAKI_INPUTS" not in env
+    assert "MAKI_PREV" not in env
+    assert "MAKI_OUTPUT" not in env
 
 
 def test_builtin_agent_resolves_expressions_and_reuses_session_id_in_later_step(
@@ -417,10 +698,12 @@ def test_builtin_agent_resolves_expressions_and_reuses_session_id_in_later_step(
         )
 
     def fake_shell_step(
+        job: JobDef,
         step: StepDef,
         resolved_cmd: str,
         prev_output: str,
         steps_context: dict[str, dict],
+        expr_context: dict,
     ) -> str:
         shell_calls.append(step.name)
         if step.name == "seed-model":
@@ -483,6 +766,7 @@ def test_builtin_agent_resolves_expressions_and_reuses_session_id_in_later_step(
             "model": "sonnet",
             "timeout": 240,
             "session_id": None,
+            "env": {**core.os.environ, "STEPS_SEED_MODEL_RESULT": "sonnet", "STEPS_SEED_TIMEOUT_RESULT": "240"},
         },
         {
             "prompt": "Continue draft 1",
@@ -490,6 +774,14 @@ def test_builtin_agent_resolves_expressions_and_reuses_session_id_in_later_step(
             "model": "sonnet",
             "timeout": 240,
             "session_id": "session-1",
+            "env": {
+                **core.os.environ,
+                "STEPS_SEED_MODEL_RESULT": "sonnet",
+                "STEPS_SEED_TIMEOUT_RESULT": "240",
+                "STEPS_DRAFT_RESULT": "draft 1",
+                "STEPS_DRAFT_STATUS": "completed",
+                "STEPS_DRAFT_SESSION_ID": "session-1",
+            },
         },
     ]
     assert loop_ctx.last_results["manual"] == "continue?"
@@ -500,6 +792,7 @@ def test_builtin_agent_missing_prompt_fails_clearly(capsys: pytest.CaptureFixtur
         "maki/agent",
         "previous context",
         JobDef(name="demo", on="manual"),
+        StepDef(name="draft"),
         ConfirmStore(),
         {},
     )
@@ -513,6 +806,7 @@ def test_builtin_agent_invalid_timeout_fails_clearly(capsys: pytest.CaptureFixtu
         "maki/agent",
         "previous context",
         JobDef(name="demo", on="manual"),
+        StepDef(name="draft"),
         ConfirmStore(),
         {"prompt": "draft", "timeout": "soon"},
     )
@@ -534,6 +828,7 @@ def test_builtin_agent_run_and_wait_exception_fails_cleanly(
         "maki/agent",
         "previous context",
         JobDef(name="demo", on="manual"),
+        StepDef(name="draft"),
         ConfirmStore(),
         {"prompt": "draft"},
     )
@@ -597,6 +892,7 @@ def test_builtin_confirm_maps_choices_without_blocking(
         "maki/confirm",
         "draft",
         job,
+        StepDef(name="confirm"),
         store,
         {"open_browser": True},
     )

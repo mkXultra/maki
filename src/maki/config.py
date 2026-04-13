@@ -9,6 +9,10 @@ import yaml
 
 BUILTIN_ACTIONS = {"maki/confirm", "maki/report", "maki/auto", "maki/agent"}
 LOCAL_ACTION_PREFIXES = ("./", "../")
+WORKFLOW_ENV_ERROR = (
+    "Top-level workflow env is not supported; "
+    "use jobs.<job>.env or jobs.<job>.steps[].env"
+)
 
 
 def is_local_action_ref(action_ref: object) -> bool:
@@ -27,6 +31,24 @@ def normalize_action_metadata(raw: Any) -> dict[str, Any] | None:
     return {str(key): value for key, value in raw.items()}
 
 
+def normalize_env(raw: Any, *, location: str) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{location} env must be a mapping, got {type(raw).__name__}")
+
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{location} env keys must be strings, got {type(key).__name__}")
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                f"{location} env['{key}'] must be a scalar, got {type(value).__name__}"
+            )
+        normalized[key] = "" if value is None else str(value)
+    return normalized
+
+
 @dataclass
 class StepDef:
     """A step is either a shell command (run:) or a builtin action (uses:)."""
@@ -34,6 +56,7 @@ class StepDef:
     run: str | None = None
     uses: str | None = None
     cwd: str = "."
+    env: dict[str, str] = field(default_factory=dict)
     with_options: dict = field(default_factory=dict)
     if_condition: str | None = None
 
@@ -42,6 +65,7 @@ class StepDef:
 class JobDef:
     name: str
     on: str
+    env: dict[str, str] = field(default_factory=dict)
     steps: list[StepDef] = field(default_factory=list)
 
 
@@ -78,6 +102,8 @@ class Config:
 
         # YAML parses 'on:' as boolean True, normalize keys
         raw = {("on" if k is True else k): v for k, v in raw.items()}
+        if "env" in raw:
+            raise ValueError(WORKFLOW_ENV_ERROR)
 
         # Parse on: block
         on_block = raw.get("on", {})
@@ -103,15 +129,33 @@ class Config:
         jobs: list[JobDef] = []
 
         for name, job_raw in jobs_block.items():
+            if not isinstance(job_raw, dict):
+                raise ValueError(f"Job '{name}' definition must be a mapping, got {type(job_raw).__name__}")
             job_raw = {("on" if k is True else k): v for k, v in job_raw.items()}
+            job_env = normalize_env(job_raw.get("env"), location=f"Job '{name}'")
 
             steps: list[StepDef] = []
-            for step_raw in job_raw.get("steps", []):
+            steps_raw = job_raw.get("steps", [])
+            if not isinstance(steps_raw, list):
+                raise ValueError(f"Job '{name}' steps must be a list, got {type(steps_raw).__name__}")
+            for index, step_raw in enumerate(steps_raw, start=1):
+                if not isinstance(step_raw, dict):
+                    raise ValueError(
+                        f"Job '{name}' step #{index} must be a mapping, got {type(step_raw).__name__}"
+                    )
+                step_name = step_raw.get("name")
+                step_location = (
+                    f"Job '{name}' step '{step_name}'"
+                    if isinstance(step_name, str) and step_name
+                    else f"Job '{name}' step #{index}"
+                )
+                step_env = normalize_env(step_raw.get("env"), location=step_location)
                 steps.append(StepDef(
                     name=step_raw.get("name", ""),
                     run=step_raw.get("run"),
                     uses=step_raw.get("uses"),
                     cwd=step_raw.get("cwd", "."),
+                    env=step_env,
                     with_options=step_raw.get("with", {}),
                     if_condition=step_raw.get("if"),
                 ))
@@ -119,6 +163,7 @@ class Config:
             jobs.append(JobDef(
                 name=name,
                 on=job_raw.get("on", "manual"),
+                env=job_env,
                 steps=steps,
             ))
 

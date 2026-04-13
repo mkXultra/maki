@@ -89,6 +89,54 @@ def resolve_step_value(value: object, context: dict, prev_output: str) -> object
     return value
 
 
+def resolve_step_env(env: dict[str, str], context: dict, prev_output: str) -> dict[str, str]:
+    return {
+        key: str(resolve_step_value(value, context, prev_output))
+        for key, value in env.items()
+    }
+
+
+def _flatten_step_outputs_env(steps_context: dict[str, dict]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for step_name, step_data in steps_context.items():
+        for key, value in step_data.get("outputs", {}).items():
+            env_key = f"STEPS_{step_name}_{key}".upper().replace("-", "_")
+            env[env_key] = str(value)
+    return env
+
+
+RESERVED_RUNTIME_ENV_KEYS = {"PREV", "MAKI_INPUTS", "MAKI_PREV", "MAKI_OUTPUT"}
+
+
+def _filter_reserved_env(env: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in env.items()
+        if key not in RESERVED_RUNTIME_ENV_KEYS
+    }
+
+
+def build_step_env(
+    job: JobDef,
+    step: StepDef,
+    context: dict,
+    prev_output: str,
+    steps_context: dict[str, dict],
+    runtime_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    resolved_job_env = _filter_reserved_env(resolve_step_env(job.env, context, prev_output))
+    resolved_step_env = _filter_reserved_env(resolve_step_env(step.env, context, prev_output))
+    merged_env = {
+        **os.environ,
+        **resolved_job_env,
+        **resolved_step_env,
+        **_flatten_step_outputs_env(steps_context),
+    }
+    if runtime_env:
+        merged_env.update(runtime_env)
+    return merged_env
+
+
 # --- Main loop ---
 
 def run_loop(config: Config, once: bool = False) -> None:
@@ -159,7 +207,7 @@ def process_event(event: Event, config: Config, loop_ctx: LoopContext, store: Co
         if step.run:
             resolved_cmd = resolve_expressions(step.run, expr_context)
             click.echo(f"  [{step_id}] run: {resolved_cmd[:80]}")
-            output = run_shell_step(step, resolved_cmd, prev_output, steps_context)
+            output = run_shell_step(job, step, resolved_cmd, prev_output, steps_context, expr_context)
             if output is None:
                 click.echo(f"  [{step_id}] failed, stopping job")
                 steps_context[step_id] = {"outputs": {"result": ""}, "outcome": "failure"}
@@ -173,9 +221,11 @@ def process_event(event: Event, config: Config, loop_ctx: LoopContext, store: Co
                 step.uses,
                 prev_output,
                 job,
+                step,
                 store,
                 step.with_options,
                 expr_context,
+                steps_context,
                 base_dir=config.base_dir,
             )
             if outputs is None:
@@ -189,18 +239,22 @@ def process_event(event: Event, config: Config, loop_ctx: LoopContext, store: Co
 
 
 def run_shell_step(
+    job: JobDef,
     step: StepDef,
     resolved_cmd: str,
     prev_output: str,
     steps_context: dict[str, dict],
+    expr_context: dict,
 ) -> str | None:
     """Run a shell command with step outputs available as env vars."""
-    env = {**os.environ, "PREV": prev_output}
-    # Also export flattened step outputs for shell convenience
-    for step_name, step_data in steps_context.items():
-        for key, value in step_data.get("outputs", {}).items():
-            env_key = f"STEPS_{step_name}_{key}".upper().replace("-", "_")
-            env[env_key] = str(value)
+    env = build_step_env(
+        job,
+        step,
+        expr_context,
+        prev_output,
+        steps_context,
+        runtime_env={"PREV": prev_output},
+    )
     try:
         result = subprocess.run(
             resolved_cmd,
@@ -229,16 +283,27 @@ def run_action(
     action: str,
     prev: str,
     job: JobDef,
+    step: StepDef,
     store: ConfirmStore,
     options: dict | None = None,
     expr_context: dict | None = None,
+    steps_context: dict[str, dict] | None = None,
     base_dir: Path | None = None,
 ) -> dict[str, str] | None:
     """Run a builtin or local action. Returns outputs dict or None on rejection/failure."""
     if action in BUILTIN_ACTIONS:
-        return run_builtin_action(action, prev, job, store, options, expr_context)
+        return run_builtin_action(action, prev, job, step, store, options, expr_context, steps_context)
     if is_local_action_ref(action):
-        return run_local_action(action, prev, options, expr_context, base_dir=base_dir)
+        return run_local_action(
+            action,
+            prev,
+            job,
+            step,
+            options,
+            expr_context,
+            steps_context,
+            base_dir=base_dir,
+        )
     click.echo(f"    error: unsupported action '{action}'")
     return None
 
@@ -247,13 +312,16 @@ def run_builtin_action(
     action: str,
     prev: str,
     job: JobDef,
+    step: StepDef,
     store: ConfirmStore,
     options: dict | None = None,
     expr_context: dict | None = None,
+    steps_context: dict[str, dict] | None = None,
 ) -> dict[str, str] | None:
     """Run a builtin action. Returns outputs dict or None on rejection/failure."""
     options = options or {}
     expr_context = expr_context or {}
+    steps_context = steps_context or {}
 
     if action == "maki/auto":
         click.echo(f"    {prev[:200]}")
@@ -311,6 +379,7 @@ def run_builtin_action(
                 model=model,
                 timeout=timeout,
                 session_id=session_id,
+                env=build_step_env(job, step, expr_context, prev, steps_context),
             )
         except Exception as e:
             detail = str(e).strip() or e.__class__.__name__
@@ -361,12 +430,16 @@ def _normalize_local_action_outputs(raw_output: object) -> dict[str, str] | None
 def run_local_action(
     action: str,
     prev: str,
+    job: JobDef,
+    step: StepDef,
     options: dict | None = None,
     expr_context: dict | None = None,
+    steps_context: dict[str, dict] | None = None,
     base_dir: Path | None = None,
 ) -> dict[str, str] | None:
     options = options or {}
     expr_context = expr_context or {}
+    steps_context = steps_context or {}
 
     action_base_dir = base_dir or Path.cwd()
     action_dir = resolve_action_path(action, action_base_dir)
@@ -428,12 +501,12 @@ def run_local_action(
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as output_file:
         output_path = Path(output_file.name)
 
-    env = {
-        **os.environ,
+    runtime_env = {
         "MAKI_INPUTS": json.dumps(resolved_inputs),
         "MAKI_PREV": prev,
         "MAKI_OUTPUT": str(output_path),
     }
+    env = build_step_env(job, step, expr_context, prev, steps_context, runtime_env=runtime_env)
 
     try:
         result = subprocess.run(

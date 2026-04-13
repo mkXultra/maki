@@ -1,10 +1,35 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
-from maki.config import Config
+from maki.config import Config, WORKFLOW_ENV_ERROR
+
+
+def test_parses_job_and_step_env(tmp_path: Path) -> None:
+    config = load_config(
+        tmp_path,
+        """
+jobs:
+  demo:
+    on: manual
+    env:
+      JOB_FLAG: enabled
+      RETRIES: 3
+    steps:
+      - name: shell
+        run: echo hi
+        env:
+          STEP_FLAG: true
+          EMPTY_VALUE:
+""",
+    )
+
+    job = config.jobs[0]
+    assert job.env == {"JOB_FLAG": "enabled", "RETRIES": "3"}
+    assert job.steps[0].env == {"STEP_FLAG": "True", "EMPTY_VALUE": ""}
 
 
 def load_config(tmp_path: Path, text: str) -> Config:
@@ -75,6 +100,23 @@ jobs:
     }
 
 
+def test_rejects_unsupported_top_level_workflow_env(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=re.escape(WORKFLOW_ENV_ERROR)):
+        load_config(
+            tmp_path,
+            """
+env:
+  GLOBAL_FLAG: nope
+jobs:
+  demo:
+    on: manual
+    steps:
+      - run: echo hi
+""",
+        )
+
+
+
 def test_accepts_local_action_refs(tmp_path: Path) -> None:
     config = load_config(
         tmp_path,
@@ -136,6 +178,56 @@ jobs:
       - uses: 123
 """,
             "step uses must be a string",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    env:
+      - nope
+    steps:
+      - run: echo hi
+""",
+            "Job 'demo' env must be a mapping",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    env:
+      nested:
+        nope: true
+    steps:
+      - run: echo hi
+""",
+            r"Job 'demo' env\['nested'\] must be a scalar",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    steps:
+      - run: echo hi
+        env:
+          123: nope
+""",
+            "env keys must be strings",
+        ),
+        (
+            """
+jobs:
+  demo:
+    on: manual
+    steps:
+      - name: shell
+        run: echo hi
+        env:
+          - nope
+""",
+            "step 'shell' env must be a mapping",
         ),
     ],
 )
