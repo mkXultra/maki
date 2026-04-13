@@ -34,6 +34,12 @@ uv tool install .
 
 `maki.yaml`（カレントディレクトリ）または `~/.config/maki/config.yaml` に記述します。
 
+このリポジトリでは `maki.yaml` は個人環境用としてGit管理から外しています。まずサンプルをコピーして、`cwd` などのパスを自分の環境に合わせます。
+
+```bash
+cp maki.example.yaml maki.yaml
+```
+
 ```yaml
 on:
   schedule:

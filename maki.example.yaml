@@ -1,0 +1,57 @@
+on:
+  schedule:
+    interval: 300
+
+  github-issues:
+    schedule: "*/10 * * * *"
+    steps:
+      - name: Check assigned issues
+        run: gh search issues --assignee=@me --state=open --limit=5
+        cwd: /path/to/project
+
+jobs:
+  issue-summary:
+    on: github-issues
+    steps:
+      - name: Summarize
+        uses: maki/agent
+        with:
+          model: haiku
+          cwd: /path/to/project
+          prompt: "以下のGitHub Issue一覧を要約してください。簡潔に日本語で。$PREV"
+      - uses: maki/report
+
+  readme:
+    on: manual
+    steps:
+      - name: Generate README
+        uses: maki/agent
+        with:
+          model: sonnet
+          cwd: /path/to/project
+          prompt: "docs/ディレクトリの設計書を読んでREADMEを作成してください。日本語で。"
+      - name: Review
+        uses: maki/confirm
+        with:
+          open_browser: true
+
+  test-confirm:
+    on: manual
+    steps:
+      - name: generate
+        run: echo "ランチの提案：1.カレー 2.寿司 3.ラーメン"
+      - name: review
+        uses: maki/confirm
+        with:
+          open_browser: true
+      - name: on-accept
+        if: "${{ steps.review.outputs.choice == 'accept' }}"
+        run: echo "承認されました。選択：${{ steps.generate.outputs.result }}"
+      - name: on-edit
+        if: "${{ steps.review.outputs.choice == 'edit' }}"
+        run: echo "編集されました。ユーザー入力：${{ steps.review.outputs.edit_text }}"
+      - name: on-reject
+        if: "${{ steps.review.outputs.choice == 'reject' }}"
+        run: echo "却下されました"
+      - name: final
+        run: echo "最終結果 choice=${{ steps.review.outputs.choice }} result=${{ steps.review.outputs.result }}"

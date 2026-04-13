@@ -2,6 +2,12 @@
 
 maki.yaml はmakiの動作を定義する設定ファイルです。GitHub Actions のワークフロー構文に準拠した構造を採用しています。
 
+リポジトリ直下の `maki.yaml` は個人環境用の設定として扱います。共有用の雛形は `maki.example.yaml` に置き、必要に応じてコピーして使います。
+
+```bash
+cp maki.example.yaml maki.yaml
+```
+
 ## 全体構造
 
 ```yaml
